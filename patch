@@ -1,0 +1,2307 @@
+Common subdirectories: ../../orig/vim-4.5/src/ExtUtils and ./ExtUtils
+diff -puN --exclude=tags ../../orig/vim-4.5/src/Makefile ./Makefile
+--- ../../orig/vim-4.5/src/Makefile	Wed Oct  9 16:24:40 1996
++++ ./Makefile	Wed Oct  9 18:27:10 1996
+@@ -590,7 +590,7 @@ SHELL = /bin/sh
+ .SUFFIXES:
+ .SUFFIXES: .c .o .pro
+ 
+-ALL_CFLAGS = $(DEFS) $(GUI_DEFS) $(EXTRA_DEFS) $(GUI_IPATH) $(CFLAGS) $(X_CFLAGS)
++ALL_CFLAGS = $(DEFS) $(GUI_DEFS) $(EXTRA_DEFS) $(GUI_IPATH) $(CFLAGS) $(X_CFLAGS) $(PERL_CFLAGS)
+ 
+ ALL_LIBS = $(GUI_LIBS_DIR) $(X_LIBS_DIR) $(GUI_LIBS) $(X_PRE_LIBS) $(GUI_X_LIBS) $(X_LIBS) $(X_EXTRA_LIBS) $(LIBS) $(EXTRA_LIBS)
+ 
+@@ -633,7 +633,7 @@ OBJ =	alloc.o unix.o buffer.o charset.o 
+ 	misccmds.o normal.o ops.o option.o \
+ 	pathdef.o quickfix.o regexp.o regsub.o screen.o \
+ 	search.o tables.o tag.o term.o \
+-	undo.o window.o $(GUI_OBJ)
++	undo.o window.o $(GUI_OBJ) $(PERLOBJ)
+ 
+ PRO_AUTO = unix.pro $(ALL_GUI_PRO) \
+ 	alloc.pro buffer.pro charset.pro cmdcmds.pro \
+@@ -675,12 +675,12 @@ myself:
+ # Link the target for normal use
+ $(TARGET): $(OBJ) version.c
+ 	$(CC) -c $(ALL_CFLAGS) version.c
+-	$(CC) $(LDFLAGS) -o $(TARGET) $(OBJ) version.o $(ALL_LIBS)
++	$(SHRPENV) $(CC) $(LDFLAGS) -o $(TARGET) $(OBJ) version.o $(ALL_LIBS)
+ 
+ # Link the target for debugging
+ debug: $(OBJ) version.c
+ 	$(CC) -c $(ALL_CFLAGS) version.c
+-	$(CC) $(LDFLAGS) -o $(TARGET) -g $(OBJ) version.o $(ALL_LIBS) 
++	$(SHRPENV) $(CC) $(LDFLAGS) -o $(TARGET) -g $(OBJ) version.o $(ALL_LIBS) 
+ 
+ ctags/ctags: ctags/ctags.c
+ 	cd ctags; CC="$(CC)" CFLAGS="$(CFLAGS)" $(MAKE) -f Makefile.unix
+@@ -772,7 +772,7 @@ clean celan:
+ 
+ shadow:	doc
+ 	mkdir shadow
+-	cd shadow; ln -s ../*.[ch] ../*.in ../*.sh ../toolcheck ../proto ../*.tab ../configure .
++	cd shadow; ln -s ../*.[ch] ../*.in ../*.sh ../*.xs ../toolcheck ../proto ../*.tab ../configure .
+ 	cd shadow; rm -f osdef.h config.h cmdtab.h pathdef.c
+ 	cp Makefile shadow
+ 	echo "the first targets to make vim are: scratch config myself" > shadow/config.mk
+@@ -851,6 +851,10 @@ dos2unix:
+ # Used when .o files are in src directory
+ .c.o:
+ 	$(CC) -c -I$(srcdir) $(ALL_CFLAGS) $<
++
++perl.c: perl.xs
++	$(PERL) $(PERLLIB)/ExtUtils/xsubpp -typemap \
++	    $(PERLLIB)/ExtUtils/typemap $< > $@
+ 
+ # Used when .o files are in src/objects directory
+ #$(OBJ): $$(*F).c
+diff -puN --exclude=tags ../../orig/vim-4.5/src/buffer.c ./buffer.c
+--- ../../orig/vim-4.5/src/buffer.c	Tue Sep 10 22:53:45 1996
++++ ./buffer.c	Wed Dec  4 21:32:51 1996
+@@ -220,6 +220,9 @@ buf_clear(buf)
+ buf_freeall(buf)
+ 	BUF		*buf;
+ {
++#ifdef HAVE_PERL_INTERP
++	perl_buf_free(buf);
++#endif /* HAVE_PERL_INTERP */
+ 	u_blockfree(buf);				/* free the memory allocated for undo */
+ 	ml_close(buf, TRUE);			/* close and delete the memline/memfile */
+ 	buf->b_ml.ml_line_count = 0;	/* no lines in buffer */
+diff -puN --exclude=tags ../../orig/vim-4.5/src/cmdline.c ./cmdline.c
+--- ../../orig/vim-4.5/src/cmdline.c	Wed Oct  9 16:24:41 1996
++++ ./cmdline.c	Wed Oct  9 16:28:16 1996
+@@ -3136,6 +3136,15 @@ find_pat:
+ 				}
+ 				break;
+ 
++#ifdef HAVE_PERL_INTERP
++		case CMD_perl:
++				do_perl(arg, line1, line2);
++				break;
++		case CMD_perldo:
++				do_perldo(arg, line1, line2);
++				break;
++#endif /* HAVE_PERLINTERP */
++
+ 		default:
+ 					/* Normal illegal commands have already been handled */
+ 				errormsg = (char_u *)"Sorry, this command is not implemented";
+diff -puN --exclude=tags ../../orig/vim-4.5/src/cmdtab.tab ./cmdtab.tab
+--- ../../orig/vim-4.5/src/cmdtab.tab	Sun Sep  1 21:40:47 1996
++++ ./cmdtab.tab	Wed Oct  9 16:28:17 1996
+@@ -166,6 +166,8 @@ static struct
+ 	{(char_u *)"Next",			EXTRA+RANGE+NOTADR+COUNT+BANG+EDITCMD+TRLBAR},
+ 	{(char_u *)"open",			TRLBAR},					/* not supported */
+ 	{(char_u *)"only",			BANG+TRLBAR},
++	{(char_u *)"perl",			RANGE|EXTRA|DFLALL|NEEDARG},
++	{(char_u *)"perldo",		RANGE|EXTRA|DFLALL|NEEDARG},
+ 	{(char_u *)"print",			RANGE+COUNT+TRLBAR},
+ 	{(char_u *)"pop",			RANGE+NOTADR+COUNT+TRLBAR+ZEROR},
+ 	{(char_u *)"put",			RANGE+BANG+REGSTR+TRLBAR+ZEROR},
+diff -puN --exclude=tags ../../orig/vim-4.5/src/config.h.in ./config.h.in
+--- ../../orig/vim-4.5/src/config.h.in	Wed Oct  9 16:24:41 1996
++++ ./config.h.in	Wed Oct  9 16:28:17 1996
+@@ -246,3 +246,6 @@
+ 
+ /* Define if you have the <pwd.h> header file. */
+ #undef HAVE_PWD_H
++
++/* Define if you want to compile in the Perl interpreter. */
++#undef HAVE_PERL_INTERP
+diff -puN --exclude=tags ../../orig/vim-4.5/src/config.mk ./config.mk
+--- ../../orig/vim-4.5/src/config.mk	Sun Jun  2 15:22:53 1996
++++ ./config.mk	Thu Jan  1 01:00:00 1970
+@@ -1 +0,0 @@
+-the first targets to make vim are: scratch config myself
+diff -puN --exclude=tags ../../orig/vim-4.5/src/config.mk.in ./config.mk.in
+--- ../../orig/vim-4.5/src/config.mk.in	Wed May 29 22:46:49 1996
++++ ./config.mk.in	Wed Oct  9 16:28:17 1996
+@@ -29,6 +29,12 @@ X_PRE_LIBS = @X_PRE_LIBS@
+ X_EXTRA_LIBS = @X_EXTRA_LIBS@
+ X_LIBS = @X_LIB@
+ 
++PERL=   @vi_cv_path_perl@
++PERLLIB=@vi_cv_perllib@
++SHRPENV=@shrpenv@
++PERLOBJ=@PERLOBJ@
++PERL_CFLAGS = @PERL_CFLAGS@
++
+ ### Prefix for location of files
+ PREFIX = @prefix@
+ # to fix a bug in autoconf, also do this:
+diff -puN --exclude=tags ../../orig/vim-4.5/src/configure ./configure
+--- ../../orig/vim-4.5/src/configure	Wed Oct  9 16:24:41 1996
++++ ./configure	Wed Oct  9 16:30:14 1996
+@@ -12,6 +12,8 @@ ac_help=
+ ac_default_prefix=/usr/local
+ # Any additions from configure.in:
+ ac_help="$ac_help
++  --enable-perlinterp     Include a Perl interpreter in vi."
++ac_help="$ac_help
+   --with-x                use the X Window System"
+ ac_help="$ac_help
+   --enable-gui            X11-Athena or Motif Graphical User Interface"
+@@ -633,7 +635,7 @@ else
+   yes;
+ #endif
+ EOF
+-if { ac_try='${CC-cc} -E conftest.c'; { (eval echo configure:637: \"$ac_try\") 1>&5; (eval $ac_try) 2>&5; }; } | egrep yes >/dev/null 2>&1; then
++if { ac_try='${CC-cc} -E conftest.c'; { (eval echo configure:639: \"$ac_try\") 1>&5; (eval $ac_try) 2>&5; }; } | egrep yes >/dev/null 2>&1; then
+   ac_cv_prog_gcc=yes
+ else
+   ac_cv_prog_gcc=no
+@@ -684,13 +686,13 @@ else
+   # On the NeXT, cc -E runs the code through the compiler's parser,
+   # not just through cpp.
+   cat > conftest.$ac_ext <<EOF
+-#line 688 "configure"
++#line 690 "configure"
+ #include "confdefs.h"
+ #include <assert.h>
+ Syntax Error
+ EOF
+ ac_try="$ac_cpp conftest.$ac_ext >/dev/null 2>conftest.out"
+-{ (eval echo configure:694: \"$ac_try\") 1>&5; (eval $ac_try) 2>&5; }
++{ (eval echo configure:696: \"$ac_try\") 1>&5; (eval $ac_try) 2>&5; }
+ ac_err=`grep -v '^ *+' conftest.out`
+ if test -z "$ac_err"; then
+   :
+@@ -699,13 +701,13 @@ else
+   rm -rf conftest*
+   CPP="${CC-cc} -E -traditional-cpp"
+   cat > conftest.$ac_ext <<EOF
+-#line 703 "configure"
++#line 705 "configure"
+ #include "confdefs.h"
+ #include <assert.h>
+ Syntax Error
+ EOF
+ ac_try="$ac_cpp conftest.$ac_ext >/dev/null 2>conftest.out"
+-{ (eval echo configure:709: \"$ac_try\") 1>&5; (eval $ac_try) 2>&5; }
++{ (eval echo configure:711: \"$ac_try\") 1>&5; (eval $ac_try) 2>&5; }
+ ac_err=`grep -v '^ *+' conftest.out`
+ if test -z "$ac_err"; then
+   :
+@@ -752,11 +754,11 @@ else
+   ac_cv_c_cross=yes
+ else
+ cat > conftest.$ac_ext <<EOF
+-#line 756 "configure"
++#line 758 "configure"
+ #include "confdefs.h"
+ main(){return(0);}
+ EOF
+-{ (eval echo configure:760: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }
++{ (eval echo configure:762: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }
+ if test -s conftest && (./conftest; exit) 2>/dev/null; then
+   ac_cv_c_cross=no
+ else
+@@ -785,7 +787,7 @@ if test "$GCC" != yes; then
+   save_cflags=$CFLAGS
+   CFLAGS="$CFLAGS -Olimit 2000"
+   cat > conftest.$ac_ext <<EOF
+-#line 789 "configure"
++#line 791 "configure"
+ #include "confdefs.h"
+ 
+ int main() { return 0; }
+@@ -793,7 +795,7 @@ int t() {
+ 
+ ; return 0; }
+ EOF
+-if { (eval echo configure:797: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
++if { (eval echo configure:799: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
+   rm -rf conftest*
+   echo "$ac_t""yes" 1>&6
+ else
+@@ -812,6 +814,88 @@ sh ./toolcheck 1>&6
+ fi
+ 
+ 
++
++echo $ac_n "checking if --enable-perlinterp option specified""... $ac_c" 1>&6
++# Check whether --enable-perlinterp or --disable-perlinterp was given.
++if test "${enable_perlinterp+set}" = set; then
++  enableval="$enable_perlinterp"
++  vi_cv_perlinterp="yes"
++else
++  vi_cv_perlinterp="no"
++fi
++
++echo "$ac_t""$vi_cv_perlinterp" 1>&6  
++if test "$vi_cv_perlinterp" = "yes"; then                                
++        
++        # Extract the first word of "perl", so it can be a program name with args.
++set dummy perl; ac_word=$2
++echo $ac_n "checking for $ac_word""... $ac_c" 1>&6
++if eval "test \"`echo '$''{'ac_cv_path_vi_cv_path_perl'+set}'`\" = set"; then
++  echo $ac_n "(cached) $ac_c" 1>&6
++else
++  case "$vi_cv_path_perl" in
++  /*)
++  ac_cv_path_vi_cv_path_perl="$vi_cv_path_perl" # Let the user override the test with a path.
++  ;;
++  *)
++  IFS="${IFS= 	}"; ac_save_ifs="$IFS"; IFS="${IFS}:"
++  for ac_dir in $PATH; do
++    test -z "$ac_dir" && ac_dir=.
++    if test -f $ac_dir/$ac_word; then
++      ac_cv_path_vi_cv_path_perl="$ac_dir/$ac_word"
++      break
++    fi
++  done
++  IFS="$ac_save_ifs"
++  ;;
++esac
++fi
++vi_cv_path_perl="$ac_cv_path_vi_cv_path_perl"
++if test -n "$vi_cv_path_perl"; then
++  echo "$ac_t""$vi_cv_path_perl" 1>&6
++else
++  echo "$ac_t""no" 1>&6
++fi
++
++        if test "$vi_cv_path_perl" = no; then                            
++                echo "Fatal error: no perl5 utility found."             
++                exit 1                                                       
++        fi                                                     
++        $vi_cv_path_perl -e 'require 5.003_01' || {
++                echo "Fatal error: perl5 must be version 5.003_01 or later."
++                exit 1                
++        }
++        eval `$vi_cv_path_perl -V:shrpenv`                                     
++        if test "X$shrpenv" = "XUNKNOWN"; then # pre 5.003_04
++            shrpenv=""             
++        fi
++        vi_cv_perllib=`$vi_cv_path_perl -MConfig -e 'print $Config{privlib}'`
++        
++        perlcppflags=`$vi_cv_path_perl -Mlib=$srcdir -MExtUtils::Embed \
++                -e 'ccflags;perl_inc'`
++        if test "X$perlcppflags" != "X"; then
++                PERL_CFLAGS="$perlcppflags"
++        fi
++        perllibs=`cd $srcdir;$vi_cv_path_perl -MExtUtils::Embed \
++                -e 'ldopts'`
++        if test "X$perllibs" != "X"; then
++                LIBS="$perllibs $LIBS"
++        fi
++        perlldflags=`cd $srcdir;$vi_cv_path_perl -MExtUtils::Embed \
++                -e 'ccdlflags'`
++        if test "X$perlldflags" != "X"; then
++                LDFLAGS="$perlldflags $LDFLAGS"
++        fi
++        PERLOBJ="perl.o perlsfio.o"
++        cat >> confdefs.h <<\EOF
++#define HAVE_PERL_INTERP 1
++EOF
++
++fi
++
++
++
++
+ test -z "$with_x" && with_x=yes
+ test "${enable_gui-no}" != no && with_x=yes
+ if test "$with_x" = no; then
+@@ -913,12 +997,12 @@ if test "$ac_x_includes" = NO; then
+ 
+   # First, try using that file with no special directory specified.
+ cat > conftest.$ac_ext <<EOF
+-#line 917 "configure"
++#line 1001 "configure"
+ #include "confdefs.h"
+ #include <$x_direct_test_include>
+ EOF
+ ac_try="$ac_cpp conftest.$ac_ext >/dev/null 2>conftest.out"
+-{ (eval echo configure:922: \"$ac_try\") 1>&5; (eval $ac_try) 2>&5; }
++{ (eval echo configure:1006: \"$ac_try\") 1>&5; (eval $ac_try) 2>&5; }
+ ac_err=`grep -v '^ *+' conftest.out`
+ if test -z "$ac_err"; then
+   rm -rf conftest*
+@@ -985,7 +1069,7 @@ if test "$ac_x_libraries" = NO; then
+   ac_save_LIBS="$LIBS"
+   LIBS="-l$x_direct_test_library $LIBS"
+ cat > conftest.$ac_ext <<EOF
+-#line 989 "configure"
++#line 1073 "configure"
+ #include "confdefs.h"
+ 
+ int main() { return 0; }
+@@ -993,7 +1077,7 @@ int t() {
+ ${x_direct_test_function}()
+ ; return 0; }
+ EOF
+-if { (eval echo configure:997: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
++if { (eval echo configure:1081: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
+   rm -rf conftest*
+   LIBS="$ac_save_LIBS"
+ # We can link X programs with no special library path.
+@@ -1114,7 +1198,7 @@ else
+   ac_save_LIBS="$LIBS"
+ LIBS="-lICE  $LIBS"
+ cat > conftest.$ac_ext <<EOF
+-#line 1118 "configure"
++#line 1202 "configure"
+ #include "confdefs.h"
+ /* Override any gcc2 internal prototype to avoid an error.  */
+ /* We use char because int might match the return type of a gcc2
+@@ -1126,7 +1210,7 @@ int t() {
+ IceConnectionNumber()
+ ; return 0; }
+ EOF
+-if { (eval echo configure:1130: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
++if { (eval echo configure:1214: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
+   rm -rf conftest*
+   eval "ac_cv_lib_$ac_lib_var=yes"
+ else
+@@ -1162,7 +1246,7 @@ else
+   ac_save_LIBS="$LIBS"
+ LIBS="-ldnet  $LIBS"
+ cat > conftest.$ac_ext <<EOF
+-#line 1166 "configure"
++#line 1250 "configure"
+ #include "confdefs.h"
+ /* Override any gcc2 internal prototype to avoid an error.  */
+ /* We use char because int might match the return type of a gcc2
+@@ -1174,7 +1258,7 @@ int t() {
+ dnet_ntoa()
+ ; return 0; }
+ EOF
+-if { (eval echo configure:1178: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
++if { (eval echo configure:1262: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
+   rm -rf conftest*
+   eval "ac_cv_lib_$ac_lib_var=yes"
+ else
+@@ -1201,7 +1285,7 @@ else
+   ac_save_LIBS="$LIBS"
+ LIBS="-ldnet_stub  $LIBS"
+ cat > conftest.$ac_ext <<EOF
+-#line 1205 "configure"
++#line 1289 "configure"
+ #include "confdefs.h"
+ /* Override any gcc2 internal prototype to avoid an error.  */
+ /* We use char because int might match the return type of a gcc2
+@@ -1213,7 +1297,7 @@ int t() {
+ dnet_ntoa()
+ ; return 0; }
+ EOF
+-if { (eval echo configure:1217: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
++if { (eval echo configure:1301: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
+   rm -rf conftest*
+   eval "ac_cv_lib_$ac_lib_var=yes"
+ else
+@@ -1245,7 +1329,7 @@ else
+   ac_save_LIBS="$LIBS"
+ LIBS="-lnsl  $LIBS"
+ cat > conftest.$ac_ext <<EOF
+-#line 1249 "configure"
++#line 1333 "configure"
+ #include "confdefs.h"
+ /* Override any gcc2 internal prototype to avoid an error.  */
+ /* We use char because int might match the return type of a gcc2
+@@ -1257,7 +1341,7 @@ int t() {
+ t_accept()
+ ; return 0; }
+ EOF
+-if { (eval echo configure:1261: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
++if { (eval echo configure:1345: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
+   rm -rf conftest*
+   eval "ac_cv_lib_$ac_lib_var=yes"
+ else
+@@ -1288,7 +1372,7 @@ else
+   ac_save_LIBS="$LIBS"
+ LIBS="-lsocket  $LIBS"
+ cat > conftest.$ac_ext <<EOF
+-#line 1292 "configure"
++#line 1376 "configure"
+ #include "confdefs.h"
+ /* Override any gcc2 internal prototype to avoid an error.  */
+ /* We use char because int might match the return type of a gcc2
+@@ -1300,7 +1384,7 @@ int t() {
+ socket()
+ ; return 0; }
+ EOF
+-if { (eval echo configure:1304: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
++if { (eval echo configure:1388: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
+   rm -rf conftest*
+   eval "ac_cv_lib_$ac_lib_var=yes"
+ else
+@@ -1346,7 +1430,7 @@ fi
+     cflags_save=$CFLAGS
+     CFLAGS="$CFLAGS $X_CFLAGS"
+     cat > conftest.$ac_ext <<EOF
+-#line 1350 "configure"
++#line 1434 "configure"
+ #include "confdefs.h"
+ #include <X11/Xlib.h>
+ int main() { return 0; }
+@@ -1354,7 +1438,7 @@ int t() {
+ 
+ ; return 0; }
+ EOF
+-if { (eval echo configure:1358: \"$ac_compile\") 1>&5; (eval $ac_compile) 2>&5; }; then
++if { (eval echo configure:1442: \"$ac_compile\") 1>&5; (eval $ac_compile) 2>&5; }; then
+   rm -rf conftest*
+   echo "$ac_t""yes" 1>&6
+ else
+@@ -1385,7 +1469,7 @@ else
+   ac_save_LIBS="$LIBS"
+ LIBS="-lICE $X_EXTRA_LIBS $LIBS"
+ cat > conftest.$ac_ext <<EOF
+-#line 1389 "configure"
++#line 1473 "configure"
+ #include "confdefs.h"
+ /* Override any gcc2 internal prototype to avoid an error.  */
+ /* We use char because int might match the return type of a gcc2
+@@ -1397,7 +1481,7 @@ int t() {
+ IceOpenConnection()
+ ; return 0; }
+ EOF
+-if { (eval echo configure:1401: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
++if { (eval echo configure:1485: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
+   rm -rf conftest*
+   eval "ac_cv_lib_$ac_lib_var=yes"
+ else
+@@ -1495,7 +1579,7 @@ if test -z "$ATHENA_COMMENT"; then
+   cflags_save=$CFLAGS
+   CFLAGS="$CFLAGS $X_CFLAGS"
+   cat > conftest.$ac_ext <<EOF
+-#line 1499 "configure"
++#line 1583 "configure"
+ #include "confdefs.h"
+ 
+ #include <X11/Intrinsic.h>
+@@ -1505,7 +1589,7 @@ int t() {
+ 
+ ; return 0; }
+ EOF
+-if { (eval echo configure:1509: \"$ac_compile\") 1>&5; (eval $ac_compile) 2>&5; }; then
++if { (eval echo configure:1593: \"$ac_compile\") 1>&5; (eval $ac_compile) 2>&5; }; then
+   rm -rf conftest*
+   echo "$ac_t""yes" 1>&6
+ else
+@@ -1539,7 +1623,7 @@ else
+   ac_save_LIBS="$LIBS"
+ LIBS="-lXext -lX11 $X_EXTRA_LIBS $LIBS"
+ cat > conftest.$ac_ext <<EOF
+-#line 1543 "configure"
++#line 1627 "configure"
+ #include "confdefs.h"
+ /* Override any gcc2 internal prototype to avoid an error.  */
+ /* We use char because int might match the return type of a gcc2
+@@ -1551,7 +1635,7 @@ int t() {
+ XShapeQueryExtension()
+ ; return 0; }
+ EOF
+-if { (eval echo configure:1555: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
++if { (eval echo configure:1639: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
+   rm -rf conftest*
+   eval "ac_cv_lib_$ac_lib_var=yes"
+ else
+@@ -1599,7 +1683,7 @@ fi
+ 
+ echo $ac_n "checking for sequent/ptx""... $ac_c" 1>&6
+ cat > conftest.$ac_ext <<EOF
+-#line 1603 "configure"
++#line 1687 "configure"
+ #include "confdefs.h"
+ #ifdef _SEQUENT_
+   yes;
+@@ -1629,7 +1713,7 @@ else
+   ac_save_LIBS="$LIBS"
+ LIBS="-ltermcap  $LIBS"
+ cat > conftest.$ac_ext <<EOF
+-#line 1633 "configure"
++#line 1717 "configure"
+ #include "confdefs.h"
+ /* Override any gcc2 internal prototype to avoid an error.  */
+ /* We use char because int might match the return type of a gcc2
+@@ -1641,7 +1725,7 @@ int t() {
+ tgetent()
+ ; return 0; }
+ EOF
+-if { (eval echo configure:1645: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
++if { (eval echo configure:1729: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
+   rm -rf conftest*
+   eval "ac_cv_lib_$ac_lib_var=yes"
+ else
+@@ -1671,7 +1755,7 @@ else
+   ac_save_LIBS="$LIBS"
+ LIBS="-ltermlib  $LIBS"
+ cat > conftest.$ac_ext <<EOF
+-#line 1675 "configure"
++#line 1759 "configure"
+ #include "confdefs.h"
+ /* Override any gcc2 internal prototype to avoid an error.  */
+ /* We use char because int might match the return type of a gcc2
+@@ -1683,7 +1767,7 @@ int t() {
+ tgetent()
+ ; return 0; }
+ EOF
+-if { (eval echo configure:1687: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
++if { (eval echo configure:1771: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
+   rm -rf conftest*
+   eval "ac_cv_lib_$ac_lib_var=yes"
+ else
+@@ -1713,7 +1797,7 @@ else
+   ac_save_LIBS="$LIBS"
+ LIBS="-lcurses  $LIBS"
+ cat > conftest.$ac_ext <<EOF
+-#line 1717 "configure"
++#line 1801 "configure"
+ #include "confdefs.h"
+ /* Override any gcc2 internal prototype to avoid an error.  */
+ /* We use char because int might match the return type of a gcc2
+@@ -1725,7 +1809,7 @@ int t() {
+ tgetent()
+ ; return 0; }
+ EOF
+-if { (eval echo configure:1729: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
++if { (eval echo configure:1813: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
+   rm -rf conftest*
+   eval "ac_cv_lib_$ac_lib_var=yes"
+ else
+@@ -1755,7 +1839,7 @@ else
+   ac_save_LIBS="$LIBS"
+ LIBS="-lncurses  $LIBS"
+ cat > conftest.$ac_ext <<EOF
+-#line 1759 "configure"
++#line 1843 "configure"
+ #include "confdefs.h"
+ /* Override any gcc2 internal prototype to avoid an error.  */
+ /* We use char because int might match the return type of a gcc2
+@@ -1767,7 +1851,7 @@ int t() {
+ tgetent()
+ ; return 0; }
+ EOF
+-if { (eval echo configure:1771: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
++if { (eval echo configure:1855: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
+   rm -rf conftest*
+   eval "ac_cv_lib_$ac_lib_var=yes"
+ else
+@@ -1804,11 +1888,11 @@ if test "x$olibs" != "x$LIBS"; then
+   { echo "configure: error: failed to compile test program." 1>&2; exit 1; }
+ else
+ cat > conftest.$ac_ext <<EOF
+-#line 1808 "configure"
++#line 1892 "configure"
+ #include "confdefs.h"
+ main() { exit(strcmp(tgoto("%p1%d", 0, 1), "1") ? 0 : 1); }
+ EOF
+-{ (eval echo configure:1812: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }
++{ (eval echo configure:1896: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }
+ if test -s conftest && (./conftest; exit) 2>/dev/null; then
+   echo "$ac_t""no -- we are in termcap land" 1>&6
+ else
+@@ -1826,12 +1910,12 @@ if test "$cross_compiling" = yes; then
+   { echo "configure: error: failed to compile test program" 1>&2; exit 1; }
+ else
+ cat > conftest.$ac_ext <<EOF
+-#line 1830 "configure"
++#line 1914 "configure"
+ #include "confdefs.h"
+ #include <ctype.h>
+ main() { exit(toupper('A') == 'A' && tolower('z') == 'z'); }
+ EOF
+-{ (eval echo configure:1835: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }
++{ (eval echo configure:1919: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }
+ if test -s conftest && (./conftest; exit) 2>/dev/null; then
+   cat >> confdefs.h <<\EOF
+ #define BROKEN_TOUPPER 1
+@@ -1845,7 +1929,7 @@ rm -fr conftest*
+ 
+ echo $ac_n "checking whether __DATE__ and __TIME__ work""... $ac_c" 1>&6
+ cat > conftest.$ac_ext <<EOF
+-#line 1849 "configure"
++#line 1933 "configure"
+ #include "confdefs.h"
+ 
+ int main() { return 0; }
+@@ -1853,7 +1937,7 @@ int t() {
+ fprintf("(" __DATE__ " " __TIME__ ")");
+ ; return 0; }
+ EOF
+-if { (eval echo configure:1857: \"$ac_compile\") 1>&5; (eval $ac_compile) 2>&5; }; then
++if { (eval echo configure:1941: \"$ac_compile\") 1>&5; (eval $ac_compile) 2>&5; }; then
+   rm -rf conftest*
+   echo "$ac_t""yes" 1>&6; cat >> confdefs.h <<\EOF
+ #define HAVE_DATE_TIME 1
+@@ -1872,12 +1956,12 @@ if eval "test \"`echo '$''{'ac_cv_header
+   echo $ac_n "(cached) $ac_c" 1>&6
+ else
+   cat > conftest.$ac_ext <<EOF
+-#line 1876 "configure"
++#line 1960 "configure"
+ #include "confdefs.h"
+ #include <elf.h>
+ EOF
+ ac_try="$ac_cpp conftest.$ac_ext >/dev/null 2>conftest.out"
+-{ (eval echo configure:1881: \"$ac_try\") 1>&5; (eval $ac_try) 2>&5; }
++{ (eval echo configure:1965: \"$ac_try\") 1>&5; (eval $ac_try) 2>&5; }
+ ac_err=`grep -v '^ *+' conftest.out`
+ if test -z "$ac_err"; then
+   rm -rf conftest*
+@@ -1907,7 +1991,7 @@ else
+   ac_save_LIBS="$LIBS"
+ LIBS="-lelf  $LIBS"
+ cat > conftest.$ac_ext <<EOF
+-#line 1911 "configure"
++#line 1995 "configure"
+ #include "confdefs.h"
+ 
+ int main() { return 0; }
+@@ -1915,7 +1999,7 @@ int t() {
+ main()
+ ; return 0; }
+ EOF
+-if { (eval echo configure:1919: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
++if { (eval echo configure:2003: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
+   rm -rf conftest*
+   eval "ac_cv_lib_$ac_lib_var=yes"
+ else
+@@ -1949,7 +2033,7 @@ if eval "test \"`echo '$''{'ac_cv_header
+   echo $ac_n "(cached) $ac_c" 1>&6
+ else
+   cat > conftest.$ac_ext <<EOF
+-#line 1953 "configure"
++#line 2037 "configure"
+ #include "confdefs.h"
+ #include <sys/types.h>
+ #include <$ac_hdr>
+@@ -1958,7 +2042,7 @@ int t() {
+ DIR *dirp = 0;
+ ; return 0; }
+ EOF
+-if { (eval echo configure:1962: \"$ac_compile\") 1>&5; (eval $ac_compile) 2>&5; }; then
++if { (eval echo configure:2046: \"$ac_compile\") 1>&5; (eval $ac_compile) 2>&5; }; then
+   rm -rf conftest*
+   eval "ac_cv_header_dirent_$ac_safe=yes"
+ else
+@@ -1989,7 +2073,7 @@ else
+   ac_save_LIBS="$LIBS"
+ LIBS="-ldir  $LIBS"
+ cat > conftest.$ac_ext <<EOF
+-#line 1993 "configure"
++#line 2077 "configure"
+ #include "confdefs.h"
+ /* Override any gcc2 internal prototype to avoid an error.  */
+ /* We use char because int might match the return type of a gcc2
+@@ -2001,7 +2085,7 @@ int t() {
+ opendir()
+ ; return 0; }
+ EOF
+-if { (eval echo configure:2005: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
++if { (eval echo configure:2089: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
+   rm -rf conftest*
+   eval "ac_cv_lib_$ac_lib_var=yes"
+ else
+@@ -2028,7 +2112,7 @@ else
+   ac_save_LIBS="$LIBS"
+ LIBS="-lx  $LIBS"
+ cat > conftest.$ac_ext <<EOF
+-#line 2032 "configure"
++#line 2116 "configure"
+ #include "confdefs.h"
+ /* Override any gcc2 internal prototype to avoid an error.  */
+ /* We use char because int might match the return type of a gcc2
+@@ -2040,7 +2124,7 @@ int t() {
+ opendir()
+ ; return 0; }
+ EOF
+-if { (eval echo configure:2044: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
++if { (eval echo configure:2128: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
+   rm -rf conftest*
+   eval "ac_cv_lib_$ac_lib_var=yes"
+ else
+@@ -2066,7 +2150,7 @@ if eval "test \"`echo '$''{'ac_cv_header
+   echo $ac_n "(cached) $ac_c" 1>&6
+ else
+   cat > conftest.$ac_ext <<EOF
+-#line 2070 "configure"
++#line 2154 "configure"
+ #include "confdefs.h"
+ #include <stdlib.h>
+ #include <stdarg.h>
+@@ -2074,7 +2158,7 @@ else
+ #include <float.h>
+ EOF
+ ac_try="$ac_cpp conftest.$ac_ext >/dev/null 2>conftest.out"
+-{ (eval echo configure:2078: \"$ac_try\") 1>&5; (eval $ac_try) 2>&5; }
++{ (eval echo configure:2162: \"$ac_try\") 1>&5; (eval $ac_try) 2>&5; }
+ ac_err=`grep -v '^ *+' conftest.out`
+ if test -z "$ac_err"; then
+   rm -rf conftest*
+@@ -2089,7 +2173,7 @@ rm -f conftest*
+ if test $ac_cv_header_stdc = yes; then
+   # SunOS 4.x string.h does not declare mem*, contrary to ANSI.
+ cat > conftest.$ac_ext <<EOF
+-#line 2093 "configure"
++#line 2177 "configure"
+ #include "confdefs.h"
+ #include <string.h>
+ EOF
+@@ -2107,7 +2191,7 @@ fi
+ if test $ac_cv_header_stdc = yes; then
+   # ISC 2.0.2 stdlib.h does not declare free, contrary to ANSI.
+ cat > conftest.$ac_ext <<EOF
+-#line 2111 "configure"
++#line 2195 "configure"
+ #include "confdefs.h"
+ #include <stdlib.h>
+ EOF
+@@ -2128,7 +2212,7 @@ if test "$cross_compiling" = yes; then
+   :
+ else
+ cat > conftest.$ac_ext <<EOF
+-#line 2132 "configure"
++#line 2216 "configure"
+ #include "confdefs.h"
+ #include <ctype.h>
+ #define ISLOWER(c) ('a' <= (c) && (c) <= 'z')
+@@ -2139,7 +2223,7 @@ if (XOR (islower (i), ISLOWER (i)) || to
+ exit (0); }
+ 
+ EOF
+-{ (eval echo configure:2143: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }
++{ (eval echo configure:2227: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }
+ if test -s conftest && (./conftest; exit) 2>/dev/null; then
+   :
+ else
+@@ -2163,7 +2247,7 @@ if eval "test \"`echo '$''{'ac_cv_header
+   echo $ac_n "(cached) $ac_c" 1>&6
+ else
+   cat > conftest.$ac_ext <<EOF
+-#line 2167 "configure"
++#line 2251 "configure"
+ #include "confdefs.h"
+ #include <sys/types.h>
+ #include <sys/wait.h>
+@@ -2180,7 +2264,7 @@ wait (&s);
+ s = WIFEXITED (s) ? WEXITSTATUS (s) : 1;
+ ; return 0; }
+ EOF
+-if { (eval echo configure:2184: \"$ac_compile\") 1>&5; (eval $ac_compile) 2>&5; }; then
++if { (eval echo configure:2268: \"$ac_compile\") 1>&5; (eval $ac_compile) 2>&5; }; then
+   rm -rf conftest*
+   ac_cv_header_sys_wait_h=yes
+ else
+@@ -2203,7 +2287,7 @@ fi
+ if test $ac_cv_header_sys_wait_h = no; then
+    echo $ac_n "checking for sys/wait.h that defines union wait""... $ac_c" 1>&6
+    cat > conftest.$ac_ext <<EOF
+-#line 2207 "configure"
++#line 2291 "configure"
+ #include "confdefs.h"
+ #include <sys/wait.h>
+ int main() { return 0; }
+@@ -2211,7 +2295,7 @@ int t() {
+ union wait xx, yy; xx = yy
+ ; return 0; }
+ EOF
+-if { (eval echo configure:2215: \"$ac_compile\") 1>&5; (eval $ac_compile) 2>&5; }; then
++if { (eval echo configure:2299: \"$ac_compile\") 1>&5; (eval $ac_compile) 2>&5; }; then
+   rm -rf conftest*
+   echo "$ac_t""yes" 1>&6
+ 			cat >> confdefs.h <<\EOF
+@@ -2238,12 +2322,12 @@ if eval "test \"`echo '$''{'ac_cv_header
+   echo $ac_n "(cached) $ac_c" 1>&6
+ else
+   cat > conftest.$ac_ext <<EOF
+-#line 2242 "configure"
++#line 2326 "configure"
+ #include "confdefs.h"
+ #include <$ac_hdr>
+ EOF
+ ac_try="$ac_cpp conftest.$ac_ext >/dev/null 2>conftest.out"
+-{ (eval echo configure:2247: \"$ac_try\") 1>&5; (eval $ac_try) 2>&5; }
++{ (eval echo configure:2331: \"$ac_try\") 1>&5; (eval $ac_try) 2>&5; }
+ ac_err=`grep -v '^ *+' conftest.out`
+ if test -z "$ac_err"; then
+   rm -rf conftest*
+@@ -2275,12 +2359,12 @@ if eval "test \"`echo '$''{'ac_cv_header
+   echo $ac_n "(cached) $ac_c" 1>&6
+ else
+   cat > conftest.$ac_ext <<EOF
+-#line 2279 "configure"
++#line 2363 "configure"
+ #include "confdefs.h"
+ #include <$ac_hdr>
+ EOF
+ ac_try="$ac_cpp conftest.$ac_ext >/dev/null 2>conftest.out"
+-{ (eval echo configure:2284: \"$ac_try\") 1>&5; (eval $ac_try) 2>&5; }
++{ (eval echo configure:2368: \"$ac_try\") 1>&5; (eval $ac_try) 2>&5; }
+ ac_err=`grep -v '^ *+' conftest.out`
+ if test -z "$ac_err"; then
+   rm -rf conftest*
+@@ -2312,12 +2396,12 @@ if eval "test \"`echo '$''{'ac_cv_header
+   echo $ac_n "(cached) $ac_c" 1>&6
+ else
+   cat > conftest.$ac_ext <<EOF
+-#line 2316 "configure"
++#line 2400 "configure"
+ #include "confdefs.h"
+ #include <$ac_hdr>
+ EOF
+ ac_try="$ac_cpp conftest.$ac_ext >/dev/null 2>conftest.out"
+-{ (eval echo configure:2321: \"$ac_try\") 1>&5; (eval $ac_try) 2>&5; }
++{ (eval echo configure:2405: \"$ac_try\") 1>&5; (eval $ac_try) 2>&5; }
+ ac_err=`grep -v '^ *+' conftest.out`
+ if test -z "$ac_err"; then
+   rm -rf conftest*
+@@ -2349,12 +2433,12 @@ if eval "test \"`echo '$''{'ac_cv_header
+   echo $ac_n "(cached) $ac_c" 1>&6
+ else
+   cat > conftest.$ac_ext <<EOF
+-#line 2353 "configure"
++#line 2437 "configure"
+ #include "confdefs.h"
+ #include <$ac_hdr>
+ EOF
+ ac_try="$ac_cpp conftest.$ac_ext >/dev/null 2>conftest.out"
+-{ (eval echo configure:2358: \"$ac_try\") 1>&5; (eval $ac_try) 2>&5; }
++{ (eval echo configure:2442: \"$ac_try\") 1>&5; (eval $ac_try) 2>&5; }
+ ac_err=`grep -v '^ *+' conftest.out`
+ if test -z "$ac_err"; then
+   rm -rf conftest*
+@@ -2386,12 +2470,12 @@ if eval "test \"`echo '$''{'ac_cv_header
+   echo $ac_n "(cached) $ac_c" 1>&6
+ else
+   cat > conftest.$ac_ext <<EOF
+-#line 2390 "configure"
++#line 2474 "configure"
+ #include "confdefs.h"
+ #include <$ac_hdr>
+ EOF
+ ac_try="$ac_cpp conftest.$ac_ext >/dev/null 2>conftest.out"
+-{ (eval echo configure:2395: \"$ac_try\") 1>&5; (eval $ac_try) 2>&5; }
++{ (eval echo configure:2479: \"$ac_try\") 1>&5; (eval $ac_try) 2>&5; }
+ ac_err=`grep -v '^ *+' conftest.out`
+ if test -z "$ac_err"; then
+   rm -rf conftest*
+@@ -2421,7 +2505,7 @@ if eval "test \"`echo '$''{'ac_cv_c_cons
+   echo $ac_n "(cached) $ac_c" 1>&6
+ else
+   cat > conftest.$ac_ext <<EOF
+-#line 2425 "configure"
++#line 2509 "configure"
+ #include "confdefs.h"
+ 
+ int main() { return 0; }
+@@ -2471,7 +2555,7 @@ ccp = (char const *const *) p;
+ 
+ ; return 0; }
+ EOF
+-if { (eval echo configure:2475: \"$ac_compile\") 1>&5; (eval $ac_compile) 2>&5; }; then
++if { (eval echo configure:2559: \"$ac_compile\") 1>&5; (eval $ac_compile) 2>&5; }; then
+   rm -rf conftest*
+   ac_cv_c_const=yes
+ else
+@@ -2495,7 +2579,7 @@ if eval "test \"`echo '$''{'ac_cv_type_m
+   echo $ac_n "(cached) $ac_c" 1>&6
+ else
+   cat > conftest.$ac_ext <<EOF
+-#line 2499 "configure"
++#line 2583 "configure"
+ #include "confdefs.h"
+ #include <sys/types.h>
+ #if STDC_HEADERS
+@@ -2526,7 +2610,7 @@ if eval "test \"`echo '$''{'ac_cv_type_o
+   echo $ac_n "(cached) $ac_c" 1>&6
+ else
+   cat > conftest.$ac_ext <<EOF
+-#line 2530 "configure"
++#line 2614 "configure"
+ #include "confdefs.h"
+ #include <sys/types.h>
+ #if STDC_HEADERS
+@@ -2557,7 +2641,7 @@ if eval "test \"`echo '$''{'ac_cv_type_p
+   echo $ac_n "(cached) $ac_c" 1>&6
+ else
+   cat > conftest.$ac_ext <<EOF
+-#line 2561 "configure"
++#line 2645 "configure"
+ #include "confdefs.h"
+ #include <sys/types.h>
+ #if STDC_HEADERS
+@@ -2588,7 +2672,7 @@ if eval "test \"`echo '$''{'ac_cv_type_s
+   echo $ac_n "(cached) $ac_c" 1>&6
+ else
+   cat > conftest.$ac_ext <<EOF
+-#line 2592 "configure"
++#line 2676 "configure"
+ #include "confdefs.h"
+ #include <sys/types.h>
+ #if STDC_HEADERS
+@@ -2619,7 +2703,7 @@ if eval "test \"`echo '$''{'ac_cv_type_u
+   echo $ac_n "(cached) $ac_c" 1>&6
+ else
+   cat > conftest.$ac_ext <<EOF
+-#line 2623 "configure"
++#line 2707 "configure"
+ #include "confdefs.h"
+ #include <sys/types.h>
+ EOF
+@@ -2652,7 +2736,7 @@ if eval "test \"`echo '$''{'ac_cv_header
+   echo $ac_n "(cached) $ac_c" 1>&6
+ else
+   cat > conftest.$ac_ext <<EOF
+-#line 2656 "configure"
++#line 2740 "configure"
+ #include "confdefs.h"
+ #include <sys/types.h>
+ #include <sys/time.h>
+@@ -2662,7 +2746,7 @@ int t() {
+ struct tm *tp;
+ ; return 0; }
+ EOF
+-if { (eval echo configure:2666: \"$ac_compile\") 1>&5; (eval $ac_compile) 2>&5; }; then
++if { (eval echo configure:2750: \"$ac_compile\") 1>&5; (eval $ac_compile) 2>&5; }; then
+   rm -rf conftest*
+   ac_cv_header_time=yes
+ else
+@@ -2684,7 +2768,7 @@ fi
+ 
+ echo $ac_n "checking whether termcap.h contains ospeed""... $ac_c" 1>&6
+ cat > conftest.$ac_ext <<EOF
+-#line 2688 "configure"
++#line 2772 "configure"
+ #include "confdefs.h"
+ 
+ #ifdef HAVE_TERMCAP_H
+@@ -2696,7 +2780,7 @@ int t() {
+ ospeed = 20000
+ ; return 0; }
+ EOF
+-if { (eval echo configure:2700: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
++if { (eval echo configure:2784: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
+   rm -rf conftest*
+   echo "$ac_t""yes" 1>&6; cat >> confdefs.h <<\EOF
+ #define HAVE_OSPEED 1
+@@ -2707,7 +2791,7 @@ else
+   echo "$ac_t""no" 1>&6
+ 	echo $ac_n "checking whether ospeed can be extern""... $ac_c" 1>&6
+ 	cat > conftest.$ac_ext <<EOF
+-#line 2711 "configure"
++#line 2795 "configure"
+ #include "confdefs.h"
+ 
+ #ifdef HAVE_TERMCAP_H
+@@ -2720,7 +2804,7 @@ int t() {
+ ospeed = 20000
+ ; return 0; }
+ EOF
+-if { (eval echo configure:2724: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
++if { (eval echo configure:2808: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
+   rm -rf conftest*
+   echo "$ac_t""yes" 1>&6; cat >> confdefs.h <<\EOF
+ #define OSPEED_EXTERN 1
+@@ -2739,7 +2823,7 @@ rm -f conftest*
+ 
+ echo $ac_n "checking whether termcap.h contains UP, BC and PC""... $ac_c" 1>&6
+ cat > conftest.$ac_ext <<EOF
+-#line 2743 "configure"
++#line 2827 "configure"
+ #include "confdefs.h"
+ 
+ #ifdef HAVE_TERMCAP_H
+@@ -2751,7 +2835,7 @@ int t() {
+ if (UP == 0 && BC == 0) PC = 1
+ ; return 0; }
+ EOF
+-if { (eval echo configure:2755: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
++if { (eval echo configure:2839: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
+   rm -rf conftest*
+   echo "$ac_t""yes" 1>&6; cat >> confdefs.h <<\EOF
+ #define HAVE_UP_BC_PC 1
+@@ -2762,7 +2846,7 @@ else
+   echo "$ac_t""no" 1>&6
+ 	echo $ac_n "checking whether UP, BC and PC can be extern""... $ac_c" 1>&6
+ 	cat > conftest.$ac_ext <<EOF
+-#line 2766 "configure"
++#line 2850 "configure"
+ #include "confdefs.h"
+ 
+ #ifdef HAVE_TERMCAP_H
+@@ -2775,7 +2859,7 @@ int t() {
+ if (UP == 0 && BC == 0) PC = 1
+ ; return 0; }
+ EOF
+-if { (eval echo configure:2779: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
++if { (eval echo configure:2863: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
+   rm -rf conftest*
+   echo "$ac_t""yes" 1>&6; cat >> confdefs.h <<\EOF
+ #define UP_BC_PC_EXTERN 1
+@@ -2794,7 +2878,7 @@ rm -f conftest*
+ 
+ echo $ac_n "checking whether tputs() uses outfuntype""... $ac_c" 1>&6
+ cat > conftest.$ac_ext <<EOF
+-#line 2798 "configure"
++#line 2882 "configure"
+ #include "confdefs.h"
+ 
+ #ifdef HAVE_TERMCAP_H
+@@ -2806,7 +2890,7 @@ int t() {
+ extern int xx(); tputs("test", 1, (outfuntype)xx)
+ ; return 0; }
+ EOF
+-if { (eval echo configure:2810: \"$ac_compile\") 1>&5; (eval $ac_compile) 2>&5; }; then
++if { (eval echo configure:2894: \"$ac_compile\") 1>&5; (eval $ac_compile) 2>&5; }; then
+   rm -rf conftest*
+   echo "$ac_t""yes" 1>&6; cat >> confdefs.h <<\EOF
+ #define HAVE_OUTFUNTYPE 1
+@@ -2821,7 +2905,7 @@ rm -f conftest*
+ 
+ echo $ac_n "checking whether sys/select.h and sys/time.h may both be included""... $ac_c" 1>&6
+ cat > conftest.$ac_ext <<EOF
+-#line 2825 "configure"
++#line 2909 "configure"
+ #include "confdefs.h"
+ 
+ #include <sys/types.h>
+@@ -2832,7 +2916,7 @@ int t() {
+ 
+ ; return 0; }
+ EOF
+-if { (eval echo configure:2836: \"$ac_compile\") 1>&5; (eval $ac_compile) 2>&5; }; then
++if { (eval echo configure:2920: \"$ac_compile\") 1>&5; (eval $ac_compile) 2>&5; }; then
+   rm -rf conftest*
+   echo "$ac_t""yes" 1>&6
+ 			cat >> confdefs.h <<\EOF
+@@ -2854,7 +2938,7 @@ if eval "test \"`echo '$''{'ac_cv_prog_g
+ else
+     ac_pattern="Autoconf.*'x'"
+   cat > conftest.$ac_ext <<EOF
+-#line 2858 "configure"
++#line 2942 "configure"
+ #include "confdefs.h"
+ #include <sgtty.h>
+ Autoconf TIOCGETP
+@@ -2872,7 +2956,7 @@ rm -f conftest*
+ 
+   if test $ac_cv_prog_gcc_traditional = no; then
+     cat > conftest.$ac_ext <<EOF
+-#line 2876 "configure"
++#line 2960 "configure"
+ #include "confdefs.h"
+ #include <termio.h>
+ Autoconf TCGETA
+@@ -2898,7 +2982,7 @@ if eval "test \"`echo '$''{'ac_cv_type_s
+   echo $ac_n "(cached) $ac_c" 1>&6
+ else
+   cat > conftest.$ac_ext <<EOF
+-#line 2902 "configure"
++#line 2986 "configure"
+ #include "confdefs.h"
+ #include <sys/types.h>
+ #include <signal.h>
+@@ -2916,7 +3000,7 @@ int t() {
+ int i;
+ ; return 0; }
+ EOF
+-if { (eval echo configure:2920: \"$ac_compile\") 1>&5; (eval $ac_compile) 2>&5; }; then
++if { (eval echo configure:3004: \"$ac_compile\") 1>&5; (eval $ac_compile) 2>&5; }; then
+   rm -rf conftest*
+   ac_cv_type_signal=void
+ else
+@@ -2951,7 +3035,7 @@ if test "$cross_compiling" = yes; then
+   { echo "configure: error: failed to compile test program" 1>&2; exit 1; }
+ else
+ cat > conftest.$ac_ext <<EOF
+-#line 2955 "configure"
++#line 3039 "configure"
+ #include "confdefs.h"
+ 
+ char *dagger[] = { "IFS=pwd", 0 };
+@@ -2963,7 +3047,7 @@ main()
+   return getcwd(buffer, 500) ? 0 : 1;
+ }
+ EOF
+-{ (eval echo configure:2967: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }
++{ (eval echo configure:3051: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }
+ if test -s conftest && (./conftest; exit) 2>/dev/null; then
+   echo "$ac_t""it is usable" 1>&6
+ else
+@@ -2983,7 +3067,7 @@ if eval "test \"`echo '$''{'ac_cv_func_$
+   echo $ac_n "(cached) $ac_c" 1>&6
+ else
+   cat > conftest.$ac_ext <<EOF
+-#line 2987 "configure"
++#line 3071 "configure"
+ #include "confdefs.h"
+ /* System header to define __stub macros and hopefully few prototypes,
+     which can conflict with char $ac_func(); below.  */
+@@ -3007,7 +3091,7 @@ $ac_func();
+ 
+ ; return 0; }
+ EOF
+-if { (eval echo configure:3011: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
++if { (eval echo configure:3095: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
+   rm -rf conftest*
+   eval "ac_cv_func_$ac_func=yes"
+ else
+@@ -3036,7 +3120,7 @@ if eval "test \"`echo '$''{'ac_cv_func_$
+   echo $ac_n "(cached) $ac_c" 1>&6
+ else
+   cat > conftest.$ac_ext <<EOF
+-#line 3040 "configure"
++#line 3124 "configure"
+ #include "confdefs.h"
+ /* System header to define __stub macros and hopefully few prototypes,
+     which can conflict with char $ac_func(); below.  */
+@@ -3060,7 +3144,7 @@ $ac_func();
+ 
+ ; return 0; }
+ EOF
+-if { (eval echo configure:3064: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
++if { (eval echo configure:3148: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
+   rm -rf conftest*
+   eval "ac_cv_func_$ac_func=yes"
+ else
+@@ -3089,7 +3173,7 @@ if eval "test \"`echo '$''{'ac_cv_func_$
+   echo $ac_n "(cached) $ac_c" 1>&6
+ else
+   cat > conftest.$ac_ext <<EOF
+-#line 3093 "configure"
++#line 3177 "configure"
+ #include "confdefs.h"
+ /* System header to define __stub macros and hopefully few prototypes,
+     which can conflict with char $ac_func(); below.  */
+@@ -3113,7 +3197,7 @@ $ac_func();
+ 
+ ; return 0; }
+ EOF
+-if { (eval echo configure:3117: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
++if { (eval echo configure:3201: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
+   rm -rf conftest*
+   eval "ac_cv_func_$ac_func=yes"
+ else
+@@ -3138,7 +3222,7 @@ done
+ 
+ echo $ac_n "checking for st_blksize""... $ac_c" 1>&6
+ cat > conftest.$ac_ext <<EOF
+-#line 3142 "configure"
++#line 3226 "configure"
+ #include "confdefs.h"
+ #include <sys/types.h>
+ #include <sys/stat.h>
+@@ -3151,7 +3235,7 @@ int t() {
+ 	n = (int)st.st_blksize;
+ ; return 0; }
+ EOF
+-if { (eval echo configure:3155: \"$ac_compile\") 1>&5; (eval $ac_compile) 2>&5; }; then
++if { (eval echo configure:3239: \"$ac_compile\") 1>&5; (eval $ac_compile) 2>&5; }; then
+   rm -rf conftest*
+   echo "$ac_t""yes" 1>&6; cat >> confdefs.h <<\EOF
+ #define HAVE_ST_BLKSIZE 1
+@@ -3166,7 +3250,7 @@ rm -f conftest*
+ 
+ echo $ac_n "checking for rename""... $ac_c" 1>&6
+ cat > conftest.$ac_ext <<EOF
+-#line 3170 "configure"
++#line 3254 "configure"
+ #include "confdefs.h"
+ #include <stdio.h>
+ int main() { return 0; }
+@@ -3174,7 +3258,7 @@ int t() {
+ rename("this", "that")
+ ; return 0; }
+ EOF
+-if { (eval echo configure:3178: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
++if { (eval echo configure:3262: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }; then
+   rm -rf conftest*
+   echo "$ac_t""yes" 1>&6; cat >> confdefs.h <<\EOF
+ #define HAVE_RENAME 1
+@@ -3195,7 +3279,7 @@ else
+     { echo "configure: error: can not run test program while cross compiling" 1>&2; exit 1; }
+ else
+ cat > conftest.$ac_ext <<EOF
+-#line 3199 "configure"
++#line 3283 "configure"
+ #include "confdefs.h"
+ #include <stdio.h>
+ main()
+@@ -3206,7 +3290,7 @@ main()
+   exit(0);
+ }
+ EOF
+-{ (eval echo configure:3210: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }
++{ (eval echo configure:3294: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }
+ if test -s conftest && (./conftest; exit) 2>/dev/null; then
+   ac_cv_sizeof_int=`cat conftestval`
+ else
+@@ -3242,11 +3326,11 @@ if test "$cross_compiling" = yes; then
+   { echo "configure: error: failed to compile test program" 1>&2; exit 1; }
+ else
+ cat > conftest.$ac_ext <<EOF
+-#line 3246 "configure"
++#line 3330 "configure"
+ #include "confdefs.h"
+ #define bcopy(s,d,l) memmove(d,s,l) $bcopy_test_prog
+ EOF
+-{ (eval echo configure:3250: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }
++{ (eval echo configure:3334: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }
+ if test -s conftest && (./conftest; exit) 2>/dev/null; then
+   cat >> confdefs.h <<\EOF
+ #define USEMEMMOVE 1
+@@ -3257,11 +3341,11 @@ else
+   { echo "configure: error: failed to compile test program" 1>&2; exit 1; }
+ else
+ cat > conftest.$ac_ext <<EOF
+-#line 3261 "configure"
++#line 3345 "configure"
+ #include "confdefs.h"
+ $bcopy_test_prog
+ EOF
+-{ (eval echo configure:3265: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }
++{ (eval echo configure:3349: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }
+ if test -s conftest && (./conftest; exit) 2>/dev/null; then
+   cat >> confdefs.h <<\EOF
+ #define USEBCOPY 1
+@@ -3272,11 +3356,11 @@ else
+   { echo "configure: error: failed to compile test program" 1>&2; exit 1; }
+ else
+ cat > conftest.$ac_ext <<EOF
+-#line 3276 "configure"
++#line 3360 "configure"
+ #include "confdefs.h"
+ #define bcopy(s,d,l) memcpy(d,s,l)  $bcopy_test_prog
+ EOF
+-{ (eval echo configure:3280: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }
++{ (eval echo configure:3364: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; }
+ if test -s conftest && (./conftest; exit) 2>/dev/null; then
+   cat >> confdefs.h <<\EOF
+ #define USEMEMCPY 1
+@@ -3439,6 +3523,11 @@ s%@SET_MAKE@%$SET_MAKE%g
+ s%@CC@%$CC%g
+ s%@CPP@%$CPP%g
+ s%@CPP_MM@%$CPP_MM%g
++s%@vi_cv_path_perl@%$vi_cv_path_perl%g
++s%@vi_cv_perllib@%$vi_cv_perllib%g
++s%@shrpenv@%$shrpenv%g
++s%@PERLOBJ@%$PERLOBJ%g
++s%@PERL_CFLAGS@%$PERL_CFLAGS%g
+ s%@xmkmfpath@%$xmkmfpath%g
+ s%@X_CFLAGS@%$X_CFLAGS%g
+ s%@X_PRE_LIBS@%$X_PRE_LIBS%g
+diff -puN --exclude=tags ../../orig/vim-4.5/src/configure.in ./configure.in
+--- ../../orig/vim-4.5/src/configure.in	Wed Oct  9 16:24:41 1996
++++ ./configure.in	Wed Oct  9 16:28:17 1996
+@@ -52,6 +52,52 @@ fi
+ 
+ 
+ dnl Check user requested features
++
++dnl If the user wants a Perl interpreter in vim, load it.
++AC_MSG_CHECKING(if --enable-perlinterp option specified)
++AC_ARG_ENABLE(perlinterp,      
++        [  --enable-perlinterp     Include a Perl interpreter in vi.],
++	[vi_cv_perlinterp="yes"], [vi_cv_perlinterp="no"])
++AC_MSG_RESULT($vi_cv_perlinterp)  
++if test "$vi_cv_perlinterp" = "yes"; then                                
++        AC_SUBST(vi_cv_path_perl)
++        AC_PATH_PROG(vi_cv_path_perl, perl)
++        if test "$vi_cv_path_perl" = no; then                            
++                echo "Fatal error: no perl5 utility found."             
++                exit 1                                                       
++        fi                                                     
++        $vi_cv_path_perl -e 'require 5.003_01' || {
++                echo "Fatal error: perl5 must be version 5.003_01 or later."
++                exit 1                
++        }
++        eval `$vi_cv_path_perl -V:shrpenv`                                     
++        if test "X$shrpenv" = "XUNKNOWN"; then # pre 5.003_04
++            shrpenv=""             
++        fi
++        vi_cv_perllib=`$vi_cv_path_perl -MConfig -e 'print $Config{privlib}'`
++        AC_SUBST(vi_cv_perllib)
++        perlcppflags=`$vi_cv_path_perl -Mlib=$srcdir -MExtUtils::Embed \
++                -e 'ccflags;perl_inc'`
++        if test "X$perlcppflags" != "X"; then
++                PERL_CFLAGS="$perlcppflags"
++        fi
++        perllibs=`cd $srcdir;$vi_cv_path_perl -MExtUtils::Embed \
++                -e 'ldopts'`
++        if test "X$perllibs" != "X"; then
++                LIBS="$perllibs $LIBS"
++        fi
++        perlldflags=`cd $srcdir;$vi_cv_path_perl -MExtUtils::Embed \
++                -e 'ccdlflags'`
++        if test "X$perlldflags" != "X"; then
++                LDFLAGS="$perlldflags $LDFLAGS"
++        fi
++        PERLOBJ="perl.o perlsfio.o"
++        AC_DEFINE(HAVE_PERL_INTERP)
++fi
++AC_SUBST(shrpenv)
++AC_SUBST(PERLOBJ)
++AC_SUBST(PERL_CFLAGS)
++
+ test -z "$with_x" && with_x=yes
+ test "${enable_gui-no}" != no && with_x=yes
+ if test "$with_x" = no; then
+Common subdirectories: ../../orig/vim-4.5/src/ctags and ./ctags
+Common subdirectories: ../../orig/vim-4.5/src/doc and ./doc
+diff -puN --exclude=tags ../../orig/vim-4.5/src/main.c ./main.c
+--- ../../orig/vim-4.5/src/main.c	Wed Oct  9 16:24:42 1996
++++ ./main.c	Wed Oct  9 16:28:17 1996
+@@ -1097,6 +1097,10 @@ getout(r)
+ #endif
+ 		windgoto((int)Rows - 1, 0);
+ 
++#ifdef HAVE_PERL_INTERP
++	perl_end();
++#endif
++
+ #ifdef AUTOCMD
+ 	apply_autocmds(EVENT_VIMLEAVE, NULL, NULL);
+ 
+diff -puN --exclude=tags ../../orig/vim-4.5/src/perl.xs ./perl.xs
+--- ../../orig/vim-4.5/src/perl.xs	Thu Jan  1 01:00:00 1970
++++ ./perl.xs	Wed Dec  4 22:22:02 1996
+@@ -0,0 +1,324 @@
++/* vi:set ts=4 sw=4:
++ *
++ * VIM - Vi IMproved		by Bram Moolenaar
++ *
++ * Do ":help uganda"  in Vim to read copying and usage conditions.
++ * Do ":help credits" in Vim to see a list of people who contributed.
++ */
++
++/*-
++ * Copyright (c) 1996
++ *	Sven Verdoolaege. All rights reserved.
++ */
++
++#define _REGEXP_H /* don't want it; perl namespace pollution */
++#define _memory_h /* avoid memset redeclaration */
++
++#include "vim.h"                
++#include "globals.h"                                              
++#define regexp int
++# include "proto.h"
++#undef regexp
++
++#undef MAGIC
++#undef NORMAL
++#undef STRLEN
++
++#include <EXTERN.h>
++#include <perl.h>
++#include <XSUB.h>
++
++static void * perl_interp = NULL;
++static void xs_init ();
++
++/* perl_init(): initialize perl interpreter
++ * We have to call perl_parse to initialize some structures,
++ * there's nothing to actually parse.
++ */
++
++static void
++perl_init()
++{
++    char *bootargs[] = { "VI", NULL };
++	static char *args[] = { "", "-e", "" };
++
++	perl_interp = perl_alloc();
++	perl_construct(perl_interp);
++	perl_parse(perl_interp, xs_init, 3, args, 0);
++    perl_call_argv("VI::bootstrap", G_DISCARD, bootargs);
++#ifdef USE_SFIO
++	sfdisc(PerlIO_stdout(), sfdcnewvim());
++	sfdisc(PerlIO_stderr(), sfdcnewvim());
++	sfsetbuf(PerlIO_stdout(), NULL, 0);
++	sfsetbuf(PerlIO_stderr(), NULL, 0);
++#endif
++}
++
++/* perl_end(): clean up after ourselves
++ */
++
++void
++perl_end()
++{
++	if(perl_interp) {
++		perl_run(perl_interp);
++		perl_destruct(perl_interp);
++		perl_free(perl_interp);
++	}
++}
++
++/* perl_eval(): evaluate a string
++ * we don't use mortal SVs because no one will clean up after us
++ */
++static void                  
++perl_eval(string)
++	char *string;
++{
++	SV* sv = newSVpv(string, 0);
++
++	perl_eval_sv(sv, G_DISCARD | G_NOARGS);
++	SvREFCNT_dec(sv);
++}
++
++/* msg_split(): send a message to the message handling routines
++ * split at '\n' first though.
++ */
++void
++msg_split(s)
++	char_u  *s;
++{
++	char *next,
++		 *token = (char *) s;
++	while ((next = strchr(token, '\n'))) {
++		*next++ = '\0';                  /* replace \n with \0 */
++		MSG(token);
++		token = next;
++	}
++	if (*token) MSG(token);
++}
++
++/* Create a new reference to an SV pointing to the SCR structure
++ * The perl_private part of the SCR structure points to the SV,
++ * so there can only be one such SV for a particular SCR structure.
++ * When the last reference has gone (DESTROY is called),
++ * perl_private is reset; When the screen goes away before
++ * all references are gone, the value of the SV is reset;
++ * any subsequent use of any of those reference will produce
++ * a warning. (see typemap) 
++ */
++#define newANYrv(TYPE)											\
++static SV *														\
++new ## TYPE ## rv(rv, ptr)										\
++	SV *rv;														\
++	TYPE *ptr;													\
++{																\
++	sv_upgrade(rv, SVt_RV);										\
++	if (!ptr->perl_private) {									\
++		ptr->perl_private = newSV(0);							\
++		sv_setiv(ptr->perl_private, (IV) ptr);					\
++	}															\
++	else SvREFCNT_inc(ptr->perl_private);						\
++	SvRV(rv) = ptr->perl_private;								\
++	SvROK_on(rv);												\
++	return sv_bless(rv, gv_stashpv("VI" #TYPE, TRUE));	\
++}
++
++newANYrv(WIN)
++newANYrv(BUF)
++
++/*                                                                      
++ * perl_win_free
++ *      Remove all refences to the window to be destroyed
++ *             
++ */
++void
++perl_win_free(wp)
++	WIN *wp;
++{
++	if (wp->perl_private) sv_setiv((SV *)wp->perl_private, 0);
++	return;
++}
++
++void
++perl_buf_free(bp)
++	BUF *bp;
++{
++	if (bp->perl_private) sv_setiv((SV *)bp->perl_private, 0);
++	return;
++}
++
++int
++do_perl(arg, start, end)
++	char_u	*arg;
++	linenr_t	start;
++	linenr_t	end;
++{
++	static int inited = 1;
++	static SV *svcallwin = 0;
++	char *err;
++	STRLEN length;
++
++	if (!svcallwin) {
++		if (!perl_interp) {
++			perl_init();
++		}
++		SvREADONLY_on(svcallwin = perl_get_sv("callwin", TRUE));
++	}
++
++	newWINrv(svcallwin, curwin);
++
++	perl_eval(arg);
++	err = SvPV(GvSV(errgv), length);
++
++	SvREFCNT_dec(SvRV(svcallwin));
++	SvROK_off(svcallwin);
++
++	if (!length)
++		return OK;
++
++	msg_split(err);
++	return FAIL;
++}
++
++static int
++replace_line(line, end)
++	linenr_t	*line, *end;
++{
++	char *str, *next;
++	size_t len;
++
++	if (SvOK(GvSV(defgv))) {
++		str = SvPV(GvSV(defgv),na);
++		ml_replace(*line, str, 1);
++	} else {
++		ml_delete((*line)--, FALSE);
++		(*end)--;
++	}
++	return OK;
++}
++int
++do_perldo(arg, start, end)
++	char_u	*arg;
++	linenr_t	start;
++	linenr_t	end;
++{
++	STRLEN length;
++	SV *sv;
++	char *str;
++	linenr_t i;
++	dSP;
++
++	if (bufempty())
++		return FAIL;
++
++	if (!perl_interp) {
++		perl_init();
++		SPAGAIN;
++	}
++	length = strlen(arg);
++	sv = newSV(length + sizeof("sub VI::perldo {")-1 + 1 /* } */);
++	sv_setpvn(sv, "sub VI::perldo {", sizeof("sub VI::perldo {")-1);
++	sv_catpvn(sv, arg, length);
++	sv_catpvn(sv, "}", 1);
++	perl_eval_sv(sv, G_DISCARD | G_NOARGS);
++	SvREFCNT_dec(sv);
++	str = SvPV(GvSV(errgv),length);
++	if (length)
++		goto err;
++
++	if (u_save(start-1,end+1) != OK) return FAIL;
++
++	ENTER;
++	SAVETMPS;
++	for (i = start; i <= end; i++) {
++		sv_setpv(GvSV(defgv),ml_get(i));
++		PUSHMARK(sp);
++		perl_call_pv("VI::perldo", G_SCALAR | G_EVAL);
++		str = SvPV(GvSV(errgv), length);
++		if (length) break;
++		SPAGAIN;
++		if(SvTRUEx(POPs)) {
++			if (replace_line(&i, &end) != OK) {
++				PUTBACK;
++				break;
++			}
++		}
++		PUTBACK;
++	}
++	FREETMPS;
++	LEAVE;
++	updateScreen(NOT_VALID);
++	if (!length)
++		return OK;
++
++err:
++	msg_split(str);
++	return FAIL;
++}
++
++/* Register any extra external extensions */
++
++extern void boot_DynaLoader _((CV* cv));
++extern void boot_VI _((CV* cv));
++
++static void               
++xs_init()                                                                    
++{
++        dXSUB_SYS;       
++        char *file = __FILE__;
++
++        newXS("DynaLoader::boot_DynaLoader", boot_DynaLoader, file);            
++        newXS("VI::bootstrap", boot_VI, file);
++}
++
++typedef WIN*	VIWIN;
++typedef BUF*	VIBUF;
++
++MODULE = VI		PACKAGE = VI
++
++void
++Msg(text)
++	char	*text
++
++	CODE:
++	msg_split(text);
++
++MODULE = VI		PACKAGE = VIWIN
++
++void
++DESTROY(win)
++	VIWIN win
++
++	CODE:
++	win->perl_private = 0;
++
++SV *
++Buffer(win)
++	VIWIN win
++
++	CODE:
++	RETVAL = newBUFrv(newSV(0), win->w_buffer);
++	OUTPUT:
++	RETVAL
++
++MODULE = VI		PACKAGE = VIBUF
++
++void
++DESTROY(buf)
++	VIBUF buf
++
++	CODE:
++	buf->perl_private = 0;
++
++char_u *
++GetLine(buf, lnum)
++	VIBUF buf
++	long lnum;
++
++	PREINIT:
++	char_u *line;
++
++	PPCODE:
++	line = ml_get_buf(buf, lnum, FALSE);
++	EXTEND(sp,1);
++	PUSHs(sv_2mortal(newSVpv(line, 0)));
+diff -puN --exclude=tags ../../orig/vim-4.5/src/perlsfio.c ./perlsfio.c
+--- ../../orig/vim-4.5/src/perlsfio.c	Thu Jan  1 01:00:00 1970
++++ ./perlsfio.c	Wed Oct  9 16:28:17 1996
+@@ -0,0 +1,76 @@
++/* vi:set ts=4 sw=4:
++ *
++ * VIM - Vi IMproved		by Bram Moolenaar
++ *
++ * Do ":help uganda"  in Vim to read copying and usage conditions.
++ * Do ":help credits" in Vim to see a list of people who contributed.
++ */
++
++/*-
++ * Copyright (c) 1996
++ *	Sven Verdoolaege. All rights reserved.
++ */
++
++#define _REGEXP_H /* don't want it; perl namespace pollution */
++#define _memory_h /* avoid memset redeclaration */
++
++#include "vim.h"                
++#include "globals.h"                                              
++
++#undef MAGIC
++#undef NORMAL
++#undef STRLEN
++
++#include <EXTERN.h>
++#include <perl.h>
++#include <XSUB.h>
++
++/*
++ * PUBLIC: #ifdef USE_SFIO
++ */
++#ifdef USE_SFIO
++
++#define NIL(type)       ((type)0)
++
++static int
++sfvimwrite(f, buf, n, disc)
++Sfio_t* f;      /* stream involved */
++char*           buf;    /* buffer to read into */
++int             n;      /* number of bytes to read */
++Sfdisc_t*       disc;   /* discipline */        
++{
++	char *str = malloc(n+1);
++
++	memcpy(str, buf, n);
++	str[n] = 0;
++	msg_split(str);
++	free (str);
++	return n;
++}
++
++/*
++ * sfdcnewnvi --
++ *	Create vim discipline
++ *
++ * PUBLIC: Sfdisc_t* sfdcnewvim __P(());
++ */
++
++Sfdisc_t *
++sfdcnewvim()
++{
++	Sfdisc_t*   disc;
++
++	disc = (Sfdisc_t *)malloc(sizeof(Sfdisc_t));
++	if (!disc) return disc;
++
++	disc->readf = (Sfread_f)NULL;
++	disc->writef = sfvimwrite;
++	disc->seekf = (Sfseek_f)NULL;
++	disc->exceptf = (Sfexcept_f)NULL;
++	return disc;
++}
++
++/*
++ * PUBLIC: #endif
++ */
++#endif /* USE_SFIO */
+Common subdirectories: ../../orig/vim-4.5/src/proto and ./proto
+Common subdirectories: ../../orig/vim-4.5/src/shadow and ./shadow
+diff -puN --exclude=tags ../../orig/vim-4.5/src/structs.h ./structs.h
+--- ../../orig/vim-4.5/src/structs.h	Sun Jun  9 23:34:58 1996
++++ ./structs.h	Wed Dec  4 21:26:13 1996
+@@ -418,6 +418,9 @@ struct buffer
+ #ifndef SHORT_FNAME
+ 	int				 b_shortname;	/* this file has an 8.3 filename */
+ #endif
++#ifdef HAVE_PERL_INTERP
++	void 			*perl_private;
++#endif /* HAVE_PERL_INTERP */
+ };
+ 
+ /*
+@@ -547,4 +550,8 @@ struct window
+ #ifdef USE_GUI
+ 	GuiScrollbar	w_scrollbar;				/* Scrollbar for this window */
+ #endif /* USE_GUI */
++
++#ifdef HAVE_PERL_INTERP
++	void 			*perl_private;
++#endif /* HAVE_PERL_INTERP */
+ };
+Common subdirectories: ../../orig/vim-4.5/src/tee and ./tee
+diff -puN --exclude=tags ../../orig/vim-4.5/src/typemap ./typemap
+--- ../../orig/vim-4.5/src/typemap	Thu Jan  1 01:00:00 1970
++++ ./typemap	Wed Dec  4 22:08:29 1996
+@@ -0,0 +1,14 @@
++TYPEMAP
++VIWIN	T_VIOBJNOMUNGE
++VIBUF	T_VIOBJNOMUNGE
++
++INPUT
++T_VIOBJNOMUNGE
++	if (sv_isa($arg, \"${ntype}\")) {
++	    IV tmp = SvIV((SV*)SvRV($arg));
++	    $var = ($type) tmp;
++	    if (!tmp)
++		croak(\"screen no longer exists\");
++	}
++	else
++	    croak(\"$var is not of type ${ntype}\")
+diff -puN --exclude=tags ../../orig/vim-4.5/src/window.c ./window.c
+--- ../../orig/vim-4.5/src/window.c	Wed Sep 11 22:49:30 1996
++++ ./window.c	Thu Nov 28 13:15:04 1996
+@@ -1054,6 +1054,9 @@ win_free(wp)
+ {
+ 	int		i;
+ 
++#ifdef HAVE_PERL_INTERP
++	perl_win_free(wp);
++#endif /* HAVE_PERL_INTERP */
+ 	if (prevwin == wp)
+ 		prevwin = NULL;
+ 	win_free_lsize(wp);
+Common subdirectories: ../../orig/vim-4.5/src/xxd and ./xxd
+diff -puN --exclude=tags ../../orig/vim-4.5/src/ExtUtils/Embed.pm ExtUtils/Embed.pm
+--- ../../orig/vim-4.5/src/ExtUtils/Embed.pm	Wed Oct  9 19:56:38 1996
++++ ExtUtils/Embed.pm	Fri Oct 11 19:06:49 1996
+@@ -0,0 +1,473 @@
++# $Id: Embed.pm,v 1.18 1996/07/02 13:48:17 dougm Exp $
++require 5.002;
++
++package ExtUtils::Embed;
++require Exporter;
++require FileHandle;
++use Config;
++use Getopt::Std;
++
++#Only when we need them
++#require ExtUtils::MakeMaker;
++#require ExtUtils::Liblist;
++
++use vars qw(@ISA @EXPORT $VERSION
++	    @Extensions $Verbose $lib_ext
++	    $opt_o $opt_s 
++	    );
++use strict;
++
++$VERSION = sprintf("%d.%02d", q$Revision: 1.18 $ =~ /(\d+)\.(\d+)/);
++#for the namespace change
++$Devel::embed::VERSION = "99.99";
++
++sub Version { $VERSION; }
++
++@ISA = qw(Exporter);
++@EXPORT = qw(&xsinit &ldopts 
++	     &ccopts &ccflags &ccdlflags &perl_inc
++	     &xsi_header &xsi_protos &xsi_body);
++
++#let's have Miniperl borrow from us instead
++#require ExtUtils::Miniperl;
++#*canon = \&ExtUtils::Miniperl::canon;
++
++$Verbose = 0;
++$lib_ext = $Config{lib_ext} || '.a';
++
++sub xsinit { 
++    my($file, $std, $mods) = @_;
++    my($fh,@mods,%seen);
++    $file ||= "perlxsi.c";
++
++    if (@_) {
++       @mods = @$mods if $mods;
++    }
++    else {
++       getopts('o:s:');
++       $file = $opt_o if defined $opt_o;
++       $std  = $opt_s  if defined $opt_s;
++       @mods = @ARGV;
++    }
++    $std = 1 unless scalar @mods;
++
++    if ($file eq "STDOUT") {
++	$fh = \*STDOUT;
++    }
++    else {
++	$fh = new FileHandle "> $file";
++    }
++
++    push(@mods, static_ext()) if defined $std;
++    @mods = grep(!$seen{$_}++, @mods);
++
++    print $fh &xsi_header();
++    print $fh "EXTERN_C void xs_init _((void));\n\n";     
++    print $fh &xsi_protos(@mods);
++
++    print $fh "\nEXTERN_C void\nxs_init()\n{\n";
++    print $fh &xsi_body(@mods);
++    print $fh "}\n";
++
++}
++
++sub xsi_header {
++    return <<EOF;
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#include <EXTERN.h>
++#include <perl.h>
++
++#ifdef __cplusplus
++}
++#  ifndef EXTERN_C
++#    define EXTERN_C extern "C"
++#  endif
++#else
++#  ifndef EXTERN_C
++#    define EXTERN_C extern
++#  endif
++#endif
++
++EOF
++}    
++
++sub xsi_protos {
++    my(@exts) = @_;
++    my(@retval,%seen);
++
++    foreach $_ (@exts){
++        my($pname) = canon('/', $_);
++        my($mname, $cname);
++        ($mname = $pname) =~ s!/!::!g;
++        ($cname = $pname) =~ s!/!__!g;
++	my($ccode) = "EXTERN_C void boot_${cname} _((CV* cv));\n";
++	next if $seen{$ccode}++;
++        push(@retval, $ccode);
++    }
++    return join '', @retval;
++}
++
++sub xsi_body {
++    my(@exts) = @_;
++    my($pname,@retval,%seen);
++    my($dl) = canon('/','DynaLoader');
++    push(@retval, "\tdXSUB_SYS;\n") if $] > 5.002;
++    push(@retval, "\tchar *file = __FILE__;\n\n");
++
++    foreach $_ (@exts){
++        my($pname) = canon('/', $_);
++        my($mname, $cname, $ccode);
++        ($mname = $pname) =~ s!/!::!g;
++        ($cname = $pname) =~ s!/!__!g;
++        if ($pname eq $dl){
++            # Must NOT install 'DynaLoader::boot_DynaLoader' as 'bootstrap'!
++            # boot_DynaLoader is called directly in DynaLoader.pm
++            $ccode = "\t/* DynaLoader is a special case */\n\tnewXS(\"${mname}::boot_${cname}\", boot_${cname}, file);\n";
++            push(@retval, $ccode) unless $seen{$ccode}++;
++        } else {
++            $ccode = "\tnewXS(\"${mname}::bootstrap\", boot_${cname}, file);\n";
++            push(@retval, $ccode) unless $seen{$ccode}++;
++        }
++    }
++    return join '', @retval;
++}
++
++sub static_ext {
++    unless (scalar @Extensions) {
++	@Extensions = sort split /\s+/, $Config{static_ext};
++	unshift @Extensions, qw(DynaLoader);
++    }
++    @Extensions;
++}
++
++sub ldopts {
++    require ExtUtils::MakeMaker;
++    require ExtUtils::Liblist;
++    my($std,$mods,$link_args,$path) = @_;
++    my(@mods,@link_args,@argv);
++    my($dllib,$config_libs,@potential_libs,@path);
++    local($") = ' ' unless $" eq ' ';
++    my $MM = bless {} => 'MY';
++    if (scalar @_) {
++       @link_args = @$link_args if $link_args;
++       @mods = @$mods if $mods;
++    }
++    else {
++       @argv = @ARGV;
++       #hmm
++       while($_ = shift @argv) {
++	   /^-std$/  && do { $std = 1; next; };
++	   /^--$/    && do { @link_args = @argv; last; };
++	   /^-I(.*)/ && do { $path = $1 || shift @argv; next; };
++	   push(@mods, $_); 
++       }
++    }
++    $std = 1 unless scalar @link_args;
++    @path = $path ? split(/:/, $path) : @INC;
++
++    push(@potential_libs, @link_args)    if scalar @link_args;
++    push(@potential_libs, $Config{libs}) if defined $std;
++
++    push(@mods, static_ext()) if $std;
++
++    my($mod,@ns,$root,$sub,$extra,$archive,@archives);
++    print STDERR "Searching (@path) for archives\n" if $Verbose;
++    foreach $mod (@mods) {
++	@ns = split('::', $mod);
++	$sub = $ns[-1];
++	$root = $MM->catdir(@ns);
++	
++	print STDERR "searching for '$sub${lib_ext}'\n" if $Verbose;
++	foreach (@path) {
++	    next unless -e ($archive = $MM->catdir($_,"auto",$root,"$sub$lib_ext"));
++	    push @archives, $archive;
++	    if(-e ($extra = $MM->catdir($_,"auto",$root,"extralibs.ld"))) {
++		local(*FH); 
++		if(open(FH, $extra)) {
++		    my($libs) = <FH>; chomp $libs;
++		    push @potential_libs, split /\s+/, $libs;
++		}
++		else {  
++		    warn "Couldn't open '$extra'"; 
++		}
++	    }
++	    last;
++	}
++    }
++    #print STDERR "\@potential_libs = @potential_libs\n";
++
++    my($extralibs, $bsloadlibs, $ldloadlibs, $ld_run_path) =
++	$MM->ext(join ' ', 
++		 $MM->catdir("-L$Config{archlib}", "CORE"), " -lperl", 
++		 @potential_libs);
++
++    my $ld_or_bs = $bsloadlibs || $ldloadlibs;
++    print STDERR "bs: $bsloadlibs ** ld: $ldloadlibs" if $Verbose;
++    my $linkage = "$Config{ldflags} @archives $ld_or_bs";
++    print STDERR "ldopts: '$linkage'\n" if $Verbose;
++
++    return $linkage if scalar @_;
++    print "$linkage\n";
++}
++
++sub ccflags {
++   print " $Config{ccflags} ";
++}
++
++sub ccdlflags {
++   print " $Config{ccdlflags} ";
++}
++
++sub perl_inc {
++   print " -I$Config{archlib}/CORE ";
++}
++
++sub ccopts {
++   ccflags;
++   ccdlflags;
++   perl_inc;
++}
++
++sub canon {
++    my($as, @ext) = @_;
++    foreach(@ext) {
++       # might be X::Y or lib/auto/X/Y/Y.a
++       next if s!::!/!g;
++       s:^(lib|ext)/(auto/)?::;
++       s:/\w+\.\w+$::;
++    }
++    grep(s:/:$as:, @ext) if ($as ne '/');
++    @ext;
++}
++
++__END__
++
++=head1 NAME
++
++ExtUtils::Embed - Utilities for embedding Perl in C/C++ applications
++
++=head1 SYNOPSIS
++
++
++ perl -MExtUtils::Embed -e xsinit 
++ perl -MExtUtils::Embed -e ldopts 
++
++=head1 DESCRIPTION
++
++ExtUtils::Embed provides utility functions for embedding a Perl interpreter
++and extensions in your C/C++ applications.  
++Typically, an application B<Makefile> will invoke ExtUtils::Embed
++functions while building your application.  
++
++=head1 @EXPORT
++
++ExtUtils::Embed exports the following functions:
++ 
++xsinit(), ldopts(), ccopts(), perl_inc(), ccflags(), 
++ccdlflags(), xsi_header(), xsi_protos(), xsi_body()
++
++=head1 FUNCTIONS
++
++=item xsinit()
++
++Generate C/C++ code for the XS initializer function.
++
++When invoked as C<`perl -MExtUtils::Embed -e xsinit --`>
++the following options are recognized:
++
++B<-o> E<lt>output filenameE<gt> (Defaults to B<perlxsi.c>)
++
++B<-o STDOUT> will print to STDOUT.
++
++B<-std> (Write code for extensions that are linked with the current Perl.)
++
++Any additional arguments are expected to be names of modules
++to generate code for.
++
++When invoked with parameters the following are accepted and optional:
++
++C<xsinit($filename,$std,[@modules])>
++
++Where,
++
++B<$filename> is equivalent to the B<-o> option.
++
++B<$std> is boolean, equivalent to the B<-std> option.  
++
++B<[@modules]> is an array ref, same as additional arguments mentioned above.
++
++=item Examples
++
++ 
++ perl -MExtUtils::Embed -e xsinit -- -o xsinit.c Socket
++
++
++This will generate code with an B<xs_init> function that glues the perl B<Socket::bootstrap> function 
++to the C B<boot_Socket> function and writes it to a file named "xsinit.c".
++
++Note that B<DynaLoader> is a special case where it must call B<boot_DynaLoader> directly.
++
++ perl -MExtUtils::Embed -e xsinit
++
++
++This will generate code for linking with B<DynaLoader> and 
++each static extension found in B<$Config{static_ext}>.
++The code is written to the default file name B<perlxsi.c>.
++
++
++ perl -MExtUtils::Embed -e xsinit -- -o xsinit.c -std DBI DBD::Oracle
++
++
++Here, code is written for all the currently linked extensions along with code
++for B<DBI> and B<DBD::Oracle>.
++
++If you have a working B<DynaLoader> then there is rarely any need to statically link in any 
++other extensions.
++
++=item ldopts()
++
++Output arguments for linking the Perl library and extensions to your
++application.
++
++When invoked as C<`perl -MExtUtils::Embed -e ldopts --`>
++the following options are recognized:
++
++B<-std> 
++
++Output arguments for linking the Perl library and any extensions linked
++with the current Perl.
++
++B<-I> E<lt>path1:path2E<gt>
++
++Search path for ModuleName.a archives.  
++Default path is B<@INC>.
++Library archives are expected to be found as 
++B</some/path/auto/ModuleName/ModuleName.a>
++For example, when looking for B<Socket.a> relative to a search path, 
++we should find B<auto/Socket/Socket.a>  
++
++When looking for B<DBD::Oracle> relative to a search path,
++we should find B<auto/DBD/Oracle/Oracle.a>
++
++Keep in mind, you can always supply B</my/own/path/ModuleName.a>
++as an additional linker argument.
++
++B<-->  E<lt>list of linker argsE<gt>
++
++Additional linker arguments to be considered.
++
++Any additional arguments found before the B<--> token 
++are expected to be names of modules to generate code for.
++
++When invoked with parameters the following are accepted and optional:
++
++C<ldopts($std,[@modules],[@link_args],$path)>
++
++Where,
++
++B<$std> is boolean, equivalent to the B<-std> option.  
++
++B<[@modules]> is equivalent to additional arguments found before the B<--> token.
++
++B<[@link_args]> is equivalent to arguments found after the B<--> token.
++
++B<$path> is equivalent to the B<-I> option.
++
++In addition, when ldopts is called with parameters, it will return the argument string
++rather than print it to STDOUT.
++
++=item Examples
++
++
++ perl -MExtUtils::Embed -e ldopts
++
++
++This will print arguments for linking with B<libperl.a>, B<DynaLoader> and 
++extensions found in B<$Config{static_ext}>.  This includes libraries
++found in B<$Config{libs}> and the first ModuleName.a library
++for each extension that is found by searching B<@INC> or the path 
++specifed by the B<-I> option.  
++In addition, when ModuleName.a is found, additional linker arguments
++are picked up from the B<extralibs.ld> file in the same directory.
++
++
++ perl -MExtUtils::Embed -e ldopts -- -std Socket
++ 
++
++This will do the same as the above example, along with printing additional arguments for linking with the B<Socket> extension.
++
++
++ perl -MExtUtils::Embed -e ldopts -- DynaLoader
++
++
++This will print arguments for linking with just the B<DynaLoader> extension
++and B<libperl.a>.
++
++
++ perl -MExtUtils::Embed -e ldopts -- -std Msql -- -L/usr/msql/lib -lmsql
++
++
++Any arguments after the second '--' token are additional linker
++arguments that will be examined for potential conflict.  If there is no
++conflict, the additional arguments will be part of the output.  
++
++
++=item perl_inc()
++
++For including perl header files this function simply prints:
++
++ -I$Config{archlib}/CORE  
++
++So, rather than having to say:
++
++ perl -MConfig -e 'print "-I$Config{archlib}/CORE"'
++
++Just say:
++
++ perl -MExtUtils::Embed -e perl_inc
++
++=item ccflags(), ccdlflags()
++
++These functions simply print $Config{ccflags} and $Config{ccdlflags}
++
++=item ccopts()
++
++This function combines perl_inc(), ccflags() and ccdlflags() into one.
++
++=item xsi_header()
++
++This function simply returns a string defining the same B<EXTERN_C> macro as
++B<perlmain.c> along with #including B<perl.h> and B<EXTERN.h>.  
++
++=item xsi_protos(@modules)
++
++This function returns a string of B<boot_$ModuleName> prototypes for each @modules.
++
++=item xsi_body(@modules)
++
++This function returns a string of calls to B<newXS()> that glue the module B<bootstrap>
++function to B<boot_ModuleName> for each @modules.
++
++B<xsinit()> uses the xsi_* functions to generate most of it's code.
++
++=head1 EXAMPLES
++
++For examples on how to use B<ExtUtils::Embed> for building C/C++ applications
++with embedded perl, see the eg/ directory and L<perlembed>.
++ 
++=head1 SEE ALSO
++
++L<perlembed>
++
++=head1 AUTHOR
++
++Doug MacEachern E<lt>F<dougm@osf.org>E<gt>
++
++Based on ideas from Tim Bunce E<lt>F<Tim.Bunce@ig.co.uk>E<gt> and
++B<minimod.pl> by Andreas Koenig E<lt>F<k@anna.in-berlin.de>E<gt> and Tim Bunce.
++
++=cut
++
+diff -puN --exclude=tags ../../orig/vim-4.5/src/proto/main.pro proto/main.pro
+--- ../../orig/vim-4.5/src/proto/main.pro	Wed Sep 11 23:17:46 1996
++++ proto/main.pro	Fri Oct 11 19:12:36 1996
+@@ -1,3 +1,2 @@
+ /* main.c */
+-void main __PARMS((int argc, char **argv));
+ void getout __PARMS((int r));

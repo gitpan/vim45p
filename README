@@ -1,0 +1,15 @@
+This is where the documentation should go
+Just to get you started:
+
+change into src directory of vim 4.5
+patch with -p0
+enjoy
+
+Here're some things you can try
+
+:perl $a=1
+:perldo $_=reverse($_);1
+:perl Msg("hello")
+:perl $line = $callwin->Buffer->GetLine(42)
+
+skimo@dns.ufsia.ac.be
